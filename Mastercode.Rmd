@@ -1,0 +1,238 @@
+---
+title: Master Code for Optimization of the Analysis of Chromatin Immunoprecipitation followed by sequencing for A. thaliana transcription factors by Hannah Rogers
+output:
+  html_document:
+    df_print: paged
+---
+
+This workflow is for ChIP-seq transcription factor sequencing analysis for Arabidopsis. This workflow uses fastqcr, BBDuk, STAR, BayesPeak, HOMER, and PeakSeq.This outlines the parameters used for these specific experiments and portions of this code should be adjusted depending on the data and transcription factors analyzed.
+
+How to run fastqcr, all fastqc.html goes in working directory.
+
+```{r}
+setwd("/mnt/scratch/Hannah/FastQFiles/test")
+fastqc(fq.dir= getwd(), 
+       fastqc.path="/home/hrogers/bin/FASTQC/FastQC/fastqc")
+```
+
+For loop used to run fasta trimming with BBDuk and STAR alignment for each TF, changed start and stop depending on filename, ftl and ftr based on fastqc results, all STAR was run the same for every file except for ELF4, which used 0.3 for the STAR parameters.
+
+```{r}
+setwd("/mnt/scratch/Hannah/FastQFiles/test")
+
+for(j in list.files(pattern = ".fastq")){
+  outname=paste(substr(j, start=1, stop=9), "_trimmed.fastq", sep= "")
+  system(paste("/mnt/scratch/Hannah/BBMap/bbmap/bbduk.sh in=",j," out=",outname," ref=/mnt/scratch/Hannah/BBMap/bbmap/resources/adapters.fa ktrim=r k=18 mink=11 hdist=2 ftl=10 minlen=20 tpe tbo tossbrokenreads",sep="")
+  )
+  
+  outsam=paste(substr(j, start=1, stop=9), ".sam", sep= "")
+  system(paste("/mnt/scratch/Hannah/STAR-2.5.3a/bin/Linux_x86_64/STAR --runMode alignReads --genomeDir /mnt/scratch/Hannah/ATstarindex/ --readFilesIn ",outname," --outFilterScoreMinOverLread 0.37 --outFilterMatchNminOverLread 0.37 --outFilterMatchNmin 0.37 --alignIntronMax 1 --outFileNamePrefix ",outsam, sep="")
+  )   
+}
+```
+
+Use samtools to convert from sam to bam, then bedtools to convert from bam to bed for use in BayesPeak (change the working directory, start/stop, and filepaths).
+
+```{bash}
+setwd("/mnt/scratch/Hannah/FastQFiles/PRR7/STAR_Output")
+
+for(j in list.files(pattern = ".samAligned.out.sam")){
+  outname=paste(substr(j, start=1, stop=9), ".bam", sep= "")
+  system(paste("/mnt/scratch/Hannah/samtools-1.9/samtools view -Sb  /mnt/scratch/Hannah/FastQFiles/PRR7/STAR_Output/",j,">  /mnt/scratch/Hannah/FastQFiles/PRR7/STAR_Output/",outname, sep="")
+  )
+
+  outbed=paste(substr(j, start=1, stop=9), ".bed", sep= "")
+  system(paste("/mnt/scratch/Hannah/bedtools2/bin/bamToBed -i /mnt/scratch/Hannah/FastQFiles/PRR7/STAR_Output/",outname, "> /mnt/scratch/Hannah/FastQFiles/PRR7/STAR_Output/",outbed, sep="")
+  )   
+}
+```
+
+For BayesPeak (change the working directory and control files):
+
+```{r}
+setwd("/mnt/scratch/Hannah/FastQFiles/PRR7/STAR_Output")
+
+for(h in list.files(pattern = ".bed")){
+  cl <-makeCluster(4)
+  raw.output <- bayespeak(treatment=h, 
+                          control="/mnt/scratch/Hannah/FastQFiles/PRR7/STAR_Output/normal/SRR943786.bed", 
+                          bin.size = 40L, iterations = 10000L,
+                          repeat.offset = TRUE, into.jobs = TRUE, job.size = 6E6L,
+                          job.overlap = 20L, snow.cluster=cl,
+                          prior = c(5, 5, 10, 5, 25, 4, 0.5, 5),
+                          report.p.samples = TRUE)
+  
+  stopCluster(cl)
+  save(raw.output,file = paste(h,".Rdata",sep=""))
+}
+```
+
+The peaks for the BayesPeak output are saved in .R files for each data file and can be accessed using the following code and changing the chromosome name:
+
+```{r}
+peaks<- summarize.peaks(raw.output, threshold=0.001)
+peaks@ranges$Chr1
+```
+
+For HOMER, first make tag directories for all files, then find peaks (change working directory, fragment length and control file for each transcription factor):
+
+```{r}
+setwd("/mnt/scratch/Hannah/FastQFiles/PRR7/STAR_Output")
+
+for(j in list.files(pattern = ".samAligned.out.sam")){
+  outname=paste(substr(j, start=1, stop=9), "_homer", sep= "")
+  system(paste("/mnt/scratch/Hannah/homer/bin/makeTagDirectory ",outname," /mnt/scratch/Hannah/FastQFiles/PRR7/STAR_Output/",j," -tbp 1", sep="")
+  )
+
+  system(paste("/mnt/scratch/Hannah/homer/bin/findPeaks /mnt/scratch/Hannah/FastQFiles/PRR7/STAR_Output/",outname," -style factor -o auto -i /mnt/scratch/Hannah/FastQFiles/PRR7/STAR_Output/SRR943788_homer -gsize 135000000 -size 40 -fragLength 27", sep="")
+  )   
+}
+```
+
+The following code shows how the matrix and subsequent Venn diagram for the Melting Pot Method was created: 
+
+```{r}
+rm(list=ls())
+getwd()
+
+setwd("/Users/hannahrogers/downloads")
+getwd()
+
+geneIDs <- read.table("TAIR10_all_gene_models")
+head(geneIDs)
+
+colnames(geneIDs)<-"geneIDs"
+head(geneIDs)
+
+geneIDs$geneIDs <- substr(as.character(geneIDs$geneIDs),
+                                      start= 1, 
+                                      stop= nchar(as.character(geneIDs$geneIDs) )-2 )
+
+geneIDs2<-geneIDs[!duplicated(geneIDs),]
+
+IDs<-data.frame(geneIDs2)
+
+
+
+#Toc1
+TOC1 <-read.csv("TOC1.csv")
+
+IDsandTOC1<-IDs[,1]%in%TOC1[,1]
+
+NumTOC1<-as.numeric(IDsandTOC1)
+
+#CCA1
+CCA1 <-read.csv("CCA1.csv")
+
+IDsandCCA1<-IDs[,1]%in%CCA1[,1]
+
+NumCCA1<-as.numeric(IDsandCCA1)
+
+#PRR5
+PRR5 <-read.csv("PRR5.csv")
+
+IDsandPRR5<-IDs[,1]%in%PRR5[,1]
+
+NumPRR5<-as.numeric(IDsandPRR5)
+
+#PRR7
+PRR7 <-read.csv("PRR7.csv")
+
+IDsandPRR7<-IDs[,1]%in%PRR7[,1]
+
+NumPRR7<-as.numeric(IDsandPRR7)
+
+#PRR9
+PRR9 <-read.csv("PRR9.csv")
+
+IDsandPRR9<-IDs[,1]%in%PRR9[,1]
+
+NumPRR9<-as.numeric(IDsandPRR9)
+
+#Matrix
+dataframeALL<-data.frame(NumCCA1,NumTOC1,NumPRR5,NumPRR7,NumPRR9)
+matrixALL<-as.matrix(dataframeALL)
+rownames(matrixALL)<-geneIDs2
+head(matrixALL)
+dim(matrixALL)
+```
+
+```{r}
+library(VennDiagram)
+
+length(grep("1",matrixALL[,1]))
+length(grep("1",matrixALL[,2]))
+length(grep("1",matrixALL[,3]))
+length(grep("1",matrixALL[,4]))
+length(grep("1",matrixALL[,5]))
+
+
+sum(matrixALL[,1] == "1" & grepl("1", matrixALL[,2]))
+sum(matrixALL[,1] == "1" & grepl("1", matrixALL[,3]))
+sum(matrixALL[,1] == "1" & grepl("1", matrixALL[,4]))
+sum(matrixALL[,1] == "1" & grepl("1", matrixALL[,5]))
+
+sum(matrixALL[,2] == "1" & grepl("1", matrixALL[,3]))
+sum(matrixALL[,2] == "1" & grepl("1", matrixALL[,4]))
+sum(matrixALL[,2] == "1" & grepl("1", matrixALL[,5]))
+
+sum(matrixALL[,3] == "1" & grepl("1", matrixALL[,4]))
+sum(matrixALL[,3] == "1" & grepl("1", matrixALL[,5]))
+
+sum(matrixALL[,4] == "1" & grepl("1", matrixALL[,5]))
+
+sum(grepl("1", matrixALL[,1]) & grepl("1", matrixALL[,2]) & grepl("1", matrixALL[,3]))
+sum(grepl("1", matrixALL[,1]) & grepl("1", matrixALL[,2]) & grepl("1", matrixALL[,4]))
+sum(grepl("1", matrixALL[,1]) & grepl("1", matrixALL[,2]) & grepl("1", matrixALL[,5]))
+sum(grepl("1", matrixALL[,1]) & grepl("1", matrixALL[,3]) & grepl("1", matrixALL[,4]))
+sum(grepl("1", matrixALL[,1]) & grepl("1", matrixALL[,3]) & grepl("1", matrixALL[,5]))
+sum(grepl("1", matrixALL[,1]) & grepl("1", matrixALL[,4]) & grepl("1", matrixALL[,5]))
+sum(grepl("1", matrixALL[,2]) & grepl("1", matrixALL[,3]) & grepl("1", matrixALL[,4]))
+sum(grepl("1", matrixALL[,2]) & grepl("1", matrixALL[,3]) & grepl("1", matrixALL[,5]))
+sum(grepl("1", matrixALL[,2]) & grepl("1", matrixALL[,4]) & grepl("1", matrixALL[,5]))
+sum(grepl("1", matrixALL[,3]) & grepl("1", matrixALL[,4]) & grepl("1", matrixALL[,5]))
+
+sum(grepl("1", matrixALL[,1]) & grepl("1", matrixALL[,2]) & grepl("1", matrixALL[,3])
+  & grepl("1", matrixALL[,4]))
+sum(grepl("1", matrixALL[,1]) & grepl("1", matrixALL[,2]) & grepl("1", matrixALL[,3])
+    & grepl("1", matrixALL[,5]))
+sum(grepl("1", matrixALL[,1]) & grepl("1", matrixALL[,2]) & grepl("1", matrixALL[,4])
+    & grepl("1", matrixALL[,5]))
+sum(grepl("1", matrixALL[,1]) & grepl("1", matrixALL[,3]) & grepl("1", matrixALL[,4])
+    & grepl("1", matrixALL[,5]))
+sum(grepl("1", matrixALL[,2]) & grepl("1", matrixALL[,3]) & grepl("1", matrixALL[,4])
+    & grepl("1", matrixALL[,5]))
+
+sum((grepl("1", matrixALL[,1]) & grepl("1", matrixALL[,2]) & grepl("1", matrixALL[,3])
+    & grepl("1", matrixALL[,4]) & grepl("1", matrixALL[,5])))
+
+fivewaytrue<-(grepl("1", matrixALL[,1]) & grepl("1", matrixALL[,2]) & grepl("1", matrixALL[,3])
+  & grepl("1", matrixALL[,4]) & grepl("1", matrixALL[,5]))
+
+which(fivewaytrue %in% "TRUE")
+
+library(VennDiagram);
+venn.plot <- draw.quintuple.venn(
+  area1 = 1761, area2 = 334, area3 = 6326, area4 = 1096, area5 = 132,
+  n12 = 89, n13 = 984, n14 = 310, n15 = 50,
+  n23 = 300, n24 = 137, n25 = 31,
+  n34 = 1046, n35 = 107, n45 = 103,
+  n123 = 83, n124 = 48, n125 = 17,
+  n134 = 298, n135 = 39, n145 = 40,
+  n234 = 135, n235 = 28, n245 = 27,
+  n345 = 99,
+  n1234 = 47, n1235 = 15, n1245 = 15,
+  n1345 = 39, n2345 = 27,
+  n12345 = 15,
+  category = c("", "", "", "", ""),
+  fill = c("dodgerblue", "goldenrod1", "darkorange1", "seagreen3", "orchid3"),
+  cat.col = c("dodgerblue", "goldenrod1", "darkorange1", "seagreen3", "orchid3"),
+  cat.cex = 2,
+  margin = 0.05,
+  cex = c(
+    1.5, 1.5, 1.5, 1.5, 1.5, 1, 0.8, 1, 0.8, 1, 0.8, 1, 0.8, 1, 0.8,
+    1, 0.55, 1, 0.55, 1, 0.55, 1, 0.55, 1, 0.55, 1, 1, 1, 1, 1, 1.5),
+  ind = TRUE);
+dev.off()
+```
+
